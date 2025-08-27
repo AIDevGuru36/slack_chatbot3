@@ -1,0 +1,11 @@
+slack_bolt==1.18.1
+slack_sdk==3.27.1
+python-dotenv==1.0.1
+fastapi==0.112.2
+uvicorn==0.30.6
+pydantic==2.8.2
+pandas==2.2.2
+langchain==0.2.15
+langchain-openai==0.1.22
+openai==1.44.0
+python-dateutil==2.9.0.post0

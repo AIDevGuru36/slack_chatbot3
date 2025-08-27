@@ -1,0 +1,20 @@
+version: "3.9"
+services:
+  app:
+    image: python:3.11-slim
+    working_dir: /srv
+    volumes:
+      - ./:/srv
+    environment:
+      - SLACK_BOT_TOKEN
+      - SLACK_APP_TOKEN
+      - SLACK_SIGNING_SECRET
+      - OPENAI_API_KEY
+      - LANGCHAIN_API_KEY
+      - LANGCHAIN_PROJECT
+      - LANGCHAIN_TRACING_V2=true
+      - DB_PATH=data/rounds.db
+      - APP_MODE=socket
+    command: bash -lc "pip install -r requirements.txt && python -m app.bolt_app"
+    ports:
+      - "8000:8000"
