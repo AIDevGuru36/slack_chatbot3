@@ -3,22 +3,13 @@ from typing import Dict, Any, Optional
 from .schema_doc import SCHEMA_TEXT
 from .prompts import SYSTEM_PROMPT, FEW_SHOTS
 from .config import USE_OPENAI, LLM_MODEL, LLM_FIRST, LLM_TEMPERATURE, LOG_LLM_USAGE, LOG_RULE_USAGE
-from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
 OFFTOPIC_PATTERNS = [
     re.compile(r"^\s*(hi|hello|hey|yo|sup|hiya|good (morning|afternoon|evening))\s*!?$", re.I),
     re.compile(r"^\s*(thanks|thank you|thx)\s*!?$", re.I),
-    # obvious off-topic words you don't want to handle:
     re.compile(r"\b(joke|weather|time|date|news)\b", re.I),
 ]
-
-# OpenAI via langchain
-try:
-    if USE_OPENAI:
-        from langchain_openai import ChatOpenAI
-except Exception:
-    pass
 
 SIMPLE_RULES = [
     (re.compile(r"^\s*help\s*$", re.I),
@@ -61,8 +52,51 @@ SIMPLE_RULES = [
     "answer_type":"table","explanation":"Compares monthly UA cost and ranks by absolute change.","assumptions":"Months fixed to Dec 2024 vs Jan 2025."}),
 ]
 
+def _llm_plan(user_text: str, last_plan: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    # Import inside so the module loads even if langchain_openai isn’t present at import time
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(model=LLM_MODEL, temperature=LLM_TEMPERATURE)
+    logger.info("[nlp] Using %s model=%s",
+                "LLM-first" if LLM_FIRST else "LLM-fallback", LLM_MODEL)
+
+    # Few-shots already in FEW_SHOTS; include prior plan to support follow-ups
+    shot_strs = [f"User: {s['user']}\nJSON: {json.dumps(s['json'])}" for s in FEW_SHOTS]
+    prior = ""
+    if last_plan:
+        prior = (
+            "\n\nPrevious query context:"
+            f"\nSQL: {last_plan.get('sql','')}"
+            f"\nAnswer type: {last_plan.get('answer_type','')}"
+            f"\nExplanation: {last_plan.get('explanation','')}"
+        )
+
+    prompt = (
+        SYSTEM_PROMPT
+        + "\n\nSCHEMA:\n" + SCHEMA_TEXT
+        + prior
+        + "\n\n" + "\n\n".join(shot_strs)
+        + f"\n\nUser: {user_text}\nReturn ONLY the JSON."
+    )
+
+    resp = llm.invoke(prompt)
+
+    # Robust JSON extraction: strip fences, slice outermost {...}
+    raw = getattr(resp, "content", str(resp)).strip().strip("`")
+    if "{" in raw and "}" in raw:
+        raw = raw[ raw.find("{") : raw.rfind("}") + 1 ]
+    data = json.loads(raw)  # raise visibly if malformed
+    if not isinstance(data, dict):
+        raise ValueError("LLM returned non-dict JSON")
+
+    # Safe defaults so downstream never KeyErrors
+    data.setdefault("sql", "")
+    data.setdefault("answer_type", "table")
+    data.setdefault("explanation", "")
+    data.setdefault("assumptions", "")
+    return data
+
 def _apply_followup(last_sql: str, user_text: str) -> Optional[str]:
-    import re
     m = re.search(r"(ios|android)", user_text, re.I)
     if not m:
         return None
@@ -113,44 +147,6 @@ def plan_query(user_text: str, last_plan: Optional[Dict[str,Any]] = None) -> Dic
                 "assumptions": "Interpreted as a platform filter follow-up."
             }
     
-    # LLM as primary method (if available and configured)
-    if USE_OPENAI and LLM_FIRST:
-        try:
-            llm = ChatOpenAI(model=LLM_MODEL, temperature=LLM_TEMPERATURE)
-            logger.info(f"[nlp] Using LLM as primary method with model={LLM_MODEL}")
-            
-            # Handle follow-up queries with context
-            context_info = ""
-            if last_plan:
-                context_info = f"\n\nPrevious query context:\nSQL: {last_plan.get('sql', '')}\nAnswer type: {last_plan.get('answer_type', '')}\nExplanation: {last_plan.get('explanation', '')}"
-            
-            shot_strs = []
-            for s in FEW_SHOTS:
-                shot_strs.append(f"User: {s['user']}\nJSON: {json.dumps(s['json'])}")
-            
-            prompt = (SYSTEM_PROMPT + "\n\nSCHEMA:\n" + SCHEMA_TEXT + 
-                     context_info + "\n\n" + "\n\n".join(shot_strs) +
-                     f"\n\nUser: {user_text}\nReturn ONLY the JSON.")
-            
-            resp = llm.invoke(prompt)
-            data = json.loads(resp.content.strip("` ").strip())
-            data.setdefault("answer_type", "table")
-            data.setdefault("explanation", "")
-            data.setdefault("assumptions", "")
-            return data
-        except Exception as e:
-            logger.warning(f"[nlp] LLM primary method failed: {e}")
-            # Fall back to rules if LLM fails
-    
-    # Rules-based approach (either as primary or fallback)
-    for pat, plan in SIMPLE_RULES:
-        if pat.search(user_text):
-            if LLM_FIRST:
-                logger.info("[nlp] Using rule-based fallback after LLM failure")
-            else:
-                logger.info("[nlp] Using rule-based primary method")
-            return plan
-    
     # Off-topic / small talk: politely decline and steer to analytics
     for pat in OFFTOPIC_PATTERNS:
         if pat.search(user_text or ""):
@@ -166,31 +162,30 @@ def plan_query(user_text: str, last_plan: Optional[Dict[str,Any]] = None) -> Dic
                 ),
                 "explanation": "",
                 "assumptions": "",
-            }    
+            }  
     
-    # LLM as fallback (if not used as primary and available)
-    if USE_OPENAI and not LLM_FIRST:
+    # LLM-FIRST (try model before rules when configured)
+    if LLM_FIRST and USE_OPENAI:
         try:
-            llm = ChatOpenAI(model=LLM_MODEL, temperature=LLM_TEMPERATURE)
-            logger.info(f"[nlp] Using LLM as fallback method with model={LLM_MODEL}")
-            
-            shot_strs = []
-            for s in FEW_SHOTS:
-                shot_strs.append(f"User: {s['user']}\nJSON: {json.dumps(s['json'])}")
-            
-            prompt = (SYSTEM_PROMPT + "\n\nSCHEMA:\n" + SCHEMA_TEXT + "\n\n" + "\n\n".join(shot_strs) +
-                    f"\n\nUser: {user_text}\nReturn ONLY the JSON.")
-            
-            resp = llm.invoke(prompt)
-            data = json.loads(resp.content.strip("` ").strip())
-            data.setdefault("answer_type", "table")
-            data.setdefault("explanation", "")
-            data.setdefault("assumptions", "")
-            return data
-        except Exception as e:
-            logger.warning(f"[nlp] LLM fallback method failed: {e}")
+            return _llm_plan(user_text, last_plan=last_plan)
+        except Exception:
+            logger.exception("[nlp] LLM-first planning failed")
     
-    # Last resort generic
+    # Rules (fast path for common asks like “how many apps…”)
+    for idx, (pat, plan) in enumerate(SIMPLE_RULES):
+        if pat.search(user_text or ""):
+            logger.info(f"[nlp] rule matched: #{idx}")
+            return plan
+    
+    # LLM fallback (if rules didn’t match)
+    if USE_OPENAI:
+        try:
+            return _llm_plan(user_text, last_plan=last_plan)
+        except Exception:
+            logger.exception("[nlp] LLM fallback failed")
+    
+    # final generic (never return None)
+    logger.info("[nlp] generic fallback")
     return {
         "sql": "SELECT app_name, platform, date, country, installs, in_app_revenue + ads_revenue AS total_revenue, ua_cost FROM app_metrics ORDER BY date DESC LIMIT 100;",
         "answer_type": "table",

@@ -72,5 +72,23 @@ FEW_SHOTS = [
             "explanation": "Compares monthly UA cost and ranks by absolute change.",
             "assumptions": "Months fixed to Dec 2024 vs Jan 2025."
         }
+    },
+    {
+        "user": "top 3 apps by installs in the last 14 days in US",
+        "json": {
+            "sql": "SELECT app_name, SUM(installs) AS installs_14d FROM app_metrics WHERE country='US' AND date >= date('now','-14 day') GROUP BY app_name ORDER BY installs_14d DESC LIMIT 3",
+            "answer_type": "table",
+            "explanation": "Top 3 by installs in the last 14 days, US only.",
+            "assumptions": "Relative window computed from today (SQLite date('now'))."
+        }
+    },
+    {
+        "user": "compare total revenue vs ua cost by platform this month",
+        "json": {
+            "sql": "SELECT platform, SUM(in_app_revenue + ads_revenue) AS total_revenue, SUM(ua_cost) AS ua_cost FROM app_metrics WHERE date >= date('now','start of month') GROUP BY platform ORDER BY total_revenue DESC",
+            "answer_type": "table",
+            "explanation": "Revenue and UA cost by platform for the current month.",
+            "assumptions": "Month starts at date('now','start of month')."
+        }
     }
 ]

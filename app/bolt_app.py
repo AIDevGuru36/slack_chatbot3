@@ -1,10 +1,11 @@
 import os, logging
 from dotenv import load_dotenv
-from slack_bolt.adapter.socket_mode import SocketModeHandler
-from .handlers import build_app
 
 logging.basicConfig(level=logging.INFO)
 load_dotenv(override=True)
+
+from slack_bolt.adapter.socket_mode import SocketModeHandler
+from .handlers import build_app
 
 def mask(t): return (t[:6] + "..." + t[-4:]) if t else "MISSING"
 
