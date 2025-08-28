@@ -6,6 +6,8 @@ from .handlers import build_app
 from .nlp.config import get_llm_config, get_nlp_config
 
 load_dotenv()
+def mask(t): return (t[:6] + "..." + t[-4:]) if t else None
+print("OPENAI=", "set" if os.getenv("OPENAI_API_KEY") else "MISSING")
 
 app = FastAPI(title="Rounds Slack BI Bot")
 bolt_app = build_app()
